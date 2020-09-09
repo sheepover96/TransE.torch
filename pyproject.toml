@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "transe.torch"
+version = "0.1.0"
+description = ""
+authors = ["sheepover96 <sheep.over@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = "3.6.4"
+numpy = "^1.19.1"
+torch = "^1.6.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
