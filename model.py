@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 import numpy as np
 
+# import pdb; pdb.set_trace()
 
 class TransEModel(nn.Module):
 
@@ -22,7 +23,7 @@ class TransEModel(nn.Module):
         e_emb = self.Ee(e)
         l_emb = self.El(l)
         t_emb = self.Ee(t)
-        d = F.normalize((e_emb + l_emb - t_emb))
+        d = torch.sum(torch.abs((e_emb + l_emb - t_emb)), dim=1)
         return d
         # neg_d1 = (e_emb + l_emb - neg_tail_emb)
         # neg_d2 = (neg_head_emb + l_emb - t_emb)
@@ -31,22 +32,26 @@ class TransEModel(nn.Module):
 
 
 class TransE():
-    def __init__(self, nentity, nrelation, vector_dim, margin):
+    def __init__(self, nentity, nrelation, vector_dim, margin, device):
         super(TransE, self).__init__()
         self.nentity = nentity #
         self.nrelation = nrelation #
         self.vector_dim = vector_dim # k
         self.margin = margin
+        self.device = device
 
     def _negative_sample(self, batch):
-        neg_head = torch.randint(high=(self.nentity-1), size=(batch.shape[0],1))
-        neg_link = torch.randint(high=(self.nentity-1), size=(batch.shape[0],1))
+        neg_head = torch.randint(high=(self.nentity-1), size=(batch.shape[0],))
+        neg_link = torch.randint(high=(self.nentity-1), size=(batch.shape[0],))
         return neg_head, neg_link
 
-    def fit(self, X, batch_size=200, nepoch=100, lr=0.01):
+    def fit(self, X, batch_size=200, nepoch=100, lr=0.01, validation=None):
         self.X = X
         self.hs = self.X[:,0]; self.rs = self.X[:,1]; self.ts = self.X[:,2]
+
         self.model = TransEModel(nentity=self.nentity, nrelation=self.nrelation, vector_dim=self.vector_dim)
+        self.model = self.model.to(self.device)
+
         optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
         # self.model.apply(init_params)
         # self.model = self.model.to(self.device)
@@ -58,7 +63,8 @@ class TransE():
                 optimizer.zero_grad()
 
                 neg_head, neg_tail = self._negative_sample(batch)
-                hs_batch = batch[:,0]; rs_batch = batch[:,1]; ts_batch = batch[:,2]
+                neg_head.to(self.device); neg_tail.to(self.device)
+                hs_batch = batch[:,0].to(self.device); rs_batch = batch[:,1].to(self.device); ts_batch = batch[:,2].to(self.device)
                 pos_d = self.model(hs_batch, rs_batch, ts_batch)
                 neg_d1 = self.model(neg_head, rs_batch, ts_batch)
                 neg_d2 = self.model(hs_batch, rs_batch, neg_tail)
@@ -71,43 +77,55 @@ class TransE():
 
             print('epoch', epoch+1, batch_loss/len(train_loader))
 
+            if validation is not None and (epoch + 1)%1 == 0:
+                print(self.test(validation))
+
     def test(self, Xtest):
         self.model.eval()
         Xtest = Xtest.to(self.device)
         #hs = Xtest[:,0]; rs = Xtest[:,1]; ts = Xtest[:,2]
         candidate_e = torch.tensor(list(range(self.nentity))).to(self.device)
-        #candidate_eb = torch.stack([candidate_e for _ in range(hs.shape[0])])
         candidate_r = torch.tensor(list(range(self.nrelation))).to(self.device)
-        #candidate_rb = torch.stack([candidate_r for _ in range(hs.shape[0])])
 
         hitk_t = 0; mean_rank_t = 0
         hitk_h = 0; mean_rank_h = 0
-        test_loader = torch.utils.data.DataLoader(Xtest, batch_size=128)
+        test_loader = torch.utils.data.DataLoader(Xtest, batch_size=1)
         for batch_idx, batch in enumerate(test_loader):
             hs = batch[:,0]; rs = batch[:,1]; ts = batch[:,2]
-            candidate_eb = torch.stack([candidate_e for _ in range(batch.shape[0])]).to(self.device)
-            tail_ranking_score = self.model(hs, rs, candidate_eb, 0)
-            rank_idxs = torch.argsort(tail_ranking_score, dim=1, descending=True)
-            for idx, rank_idx in enumerate(rank_idxs):
-                tail_prediction = candidate_e[rank_idx]
-                t = ts[idx]
-                rank = ((tail_prediction == t).nonzero()).squeeze().item()
-                mean_rank_t += rank
-                if t in tail_prediction[:10]:
-                    hitk_t += 1
+            tail_ranking_score = self.model(hs, rs, candidate_e)
+            rank_idxs = torch.argsort(tail_ranking_score, descending=True)
+            tail_pred = candidate_e[rank_idxs]
+            rank = (tail_pred == ts[0]).nonzero().squeeze().item()
+            mean_rank_t += rank
+            if ts[0] in tail_pred[:10]:
+                hitk_t += 1
+            # for idx, rank_idx in enumerate(rank_idxs):
+            #     tail_prediction = candidate_e[rank_idx]
+            #     print("pred", tail_prediction)
+            #     t = ts[0]
+            #     print("t", ts, t)
+            #     print()
+            #     rank = ((tail_prediction == t).nonzero()).squeeze().item()
+            #     mean_rank_t += rank
+            #     if t in tail_prediction[:10]:
+            #         hitk_t += 1
 
         for batch_idx, batch in enumerate(test_loader):
             hs = batch[:,0]; rs = batch[:,1]; ts = batch[:,2]
-            candidate_eb = torch.stack([candidate_e for _ in range(batch.shape[0])]).to(self.device)
-            head_ranking_score = self.model(ts, rs, candidate_eb, 2)
-            rank_idxs = torch.argsort(head_ranking_score, dim=1, descending=True)
-            for idx, rank_idx in enumerate(rank_idxs):
-                head_prediction = candidate_e[rank_idx]
-                h = hs[idx]
-                rank = ((head_prediction == h).nonzero()).squeeze().item()
-                mean_rank_h += rank
-                if h in head_prediction[:10]:
-                    hitk_h += 1
+            head_ranking_score = self.model(ts, rs, candidate_e)
+            rank_idxs = torch.argsort(head_ranking_score, descending=True)
+            head_pred = candidate_e[rank_idxs]
+            rank = (tail_pred == ts[0]).nonzero().squeeze().item()
+            mean_rank_h += rank
+            if hs[0] in head_pred[:10]:
+                hitk_h += 1
+            # for idx, rank_idx in enumerate(rank_idxs):
+            #     head_prediction = candidate_e[rank_idx]
+            #     h = hs[idx]
+            #     rank = ((head_prediction == h).nonzero()).squeeze().item()
+            #     mean_rank_h += rank
+            #     if h in head_prediction[:10]:
+            #         hitk_h += 1
 
         hitk_t = (hitk_t / Xtest.shape[0]) * 100
         hitk_h = (hitk_h / Xtest.shape[0]) * 100
