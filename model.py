@@ -46,6 +46,12 @@ class TransE():
         return neg_head, neg_link
 
     def fit(self, X, batch_size=200, nepoch=100, lr=0.01, validation=None):
+        def normalize_params(m):
+            if isinstance(m, nn.Embedding):
+                norm = m.weight.norm(dim=1, keepdim=True)
+                m.weight.data = m.weight.div(norm.expand_as(m.weight))
+                # torch.nn.utils.weight_norm(m)
+
         self.X = X
         self.hs = self.X[:,0]; self.rs = self.X[:,1]; self.ts = self.X[:,2]
 
@@ -59,15 +65,18 @@ class TransE():
         self.model.train()
         for epoch in range(nepoch):
             batch_loss = 0
+            self.model.apply(normalize_params)
             for batch_idx, batch in enumerate(train_loader):
                 optimizer.zero_grad()
 
                 neg_head, neg_tail = self._negative_sample(batch)
                 neg_head.to(self.device); neg_tail.to(self.device)
                 hs_batch = batch[:,0].to(self.device); rs_batch = batch[:,1].to(self.device); ts_batch = batch[:,2].to(self.device)
+
                 pos_d = self.model(hs_batch, rs_batch, ts_batch)
                 neg_d1 = self.model(neg_head, rs_batch, ts_batch)
                 neg_d2 = self.model(hs_batch, rs_batch, neg_tail)
+
                 loss1 = torch.max((self.margin + pos_d - neg_d1), torch.tensor([0.]))
                 loss2 = torch.max((self.margin + pos_d - neg_d2), torch.tensor([0.]))
                 loss = torch.sum(loss1) + torch.sum(loss2)
@@ -77,7 +86,7 @@ class TransE():
 
             print('epoch', epoch+1, batch_loss/len(train_loader))
 
-            if validation is not None and (epoch + 1)%1 == 0:
+            if validation is not None and (epoch + 1)%10 == 0:
                 print(self.test(validation))
 
     def test(self, Xtest):
@@ -93,39 +102,20 @@ class TransE():
         for batch_idx, batch in enumerate(test_loader):
             hs = batch[:,0]; rs = batch[:,1]; ts = batch[:,2]
             tail_ranking_score = self.model(hs, rs, candidate_e)
-            rank_idxs = torch.argsort(tail_ranking_score, descending=True)
+            rank_idxs = torch.argsort(tail_ranking_score)
             tail_pred = candidate_e[rank_idxs]
             rank = (tail_pred == ts[0]).nonzero().squeeze().item()
             mean_rank_t += rank
             if ts[0] in tail_pred[:10]:
                 hitk_t += 1
-            # for idx, rank_idx in enumerate(rank_idxs):
-            #     tail_prediction = candidate_e[rank_idx]
-            #     print("pred", tail_prediction)
-            #     t = ts[0]
-            #     print("t", ts, t)
-            #     print()
-            #     rank = ((tail_prediction == t).nonzero()).squeeze().item()
-            #     mean_rank_t += rank
-            #     if t in tail_prediction[:10]:
-            #         hitk_t += 1
 
-        for batch_idx, batch in enumerate(test_loader):
-            hs = batch[:,0]; rs = batch[:,1]; ts = batch[:,2]
-            head_ranking_score = self.model(ts, rs, candidate_e)
-            rank_idxs = torch.argsort(head_ranking_score, descending=True)
+            head_ranking_score = self.model(candidate_e, rs, ts)
+            rank_idxs = torch.argsort(head_ranking_score)
             head_pred = candidate_e[rank_idxs]
             rank = (tail_pred == ts[0]).nonzero().squeeze().item()
             mean_rank_h += rank
             if hs[0] in head_pred[:10]:
                 hitk_h += 1
-            # for idx, rank_idx in enumerate(rank_idxs):
-            #     head_prediction = candidate_e[rank_idx]
-            #     h = hs[idx]
-            #     rank = ((head_prediction == h).nonzero()).squeeze().item()
-            #     mean_rank_h += rank
-            #     if h in head_prediction[:10]:
-            #         hitk_h += 1
 
         hitk_t = (hitk_t / Xtest.shape[0]) * 100
         hitk_h = (hitk_h / Xtest.shape[0]) * 100
